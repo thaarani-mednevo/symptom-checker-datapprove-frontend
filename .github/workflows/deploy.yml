@@ -1,0 +1,91 @@
+name: Build / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: datapprove-frontend-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_DIR: /home/ubuntu/apps/mednevo/symptom_checker/frontend
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://data.mednevo.com
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets.VPS_HOST }}
+          PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${PORT:-22}" "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload release and switch
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          PORT: ${{ secrets.VPS_PORT }}
+          USER: ${{ secrets.VPS_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          SSH="ssh -i ~/.ssh/id_deploy -p ${PORT:-22} $USER@$HOST"
+          REL="$APP_DIR/releases/$SHA"
+
+          # 1. upload build into a fresh release folder
+          tar -C dist -czf - . | $SSH "rm -rf '$REL' && mkdir -p '$REL' && tar -xzf - -C '$REL'"
+
+          # 2. atomically point 'current' at it, keep the last 5 releases
+          $SSH "bash -s" <<SCRIPT
+          set -euo pipefail
+          cd "$APP_DIR"
+          test -f "releases/$SHA/index.html"
+          ln -sfn "releases/$SHA" current.tmp
+          mv -Tf current.tmp current
+          ls -1dt releases/*/ | tail -n +6 | xargs -r rm -rf
+          echo "now serving: \$(readlink current)"
+          SCRIPT
+
+      - name: Smoke test
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://data.mednevo.com/)
+          echo "https://data.mednevo.com/ -> $code (401 = up, behind basic auth)"
+          [ "$code" = "401" ] || [ "$code" = "200" ]
