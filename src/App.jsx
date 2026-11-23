@@ -63,6 +63,7 @@ export default function App() {
   const [toast, setToast] = useState(null)
   const [loading, setLoading] = useState({ list: false, detail: false })
   const [logOpen, setLogOpen] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(false)
   const detailReq = useRef(0)
   const toastTimer = useRef(null)
   const searchRef = useRef(null)
@@ -122,8 +123,8 @@ export default function App() {
     progressTimer.current = setTimeout(loadModules, 900)
   }, [loadModules])
 
-  const patchLocal = (listKey, keys, status) =>
-    setDetail((d) => d && ({ ...d, [listKey]: d[listKey].map((r) => (keys.has(r.key) ? { ...r, status } : r)) }))
+  const patchLocal = (listKey, keys, status, note = '') =>
+    setDetail((d) => d && ({ ...d, [listKey]: d[listKey].map((r) => (keys.has(r.key) ? { ...r, status, note: status === 'not_approved' ? note : '' } : r)) }))
 
   const decide = useCallback(async (listKey, type, keys, status, note = '') => {
     if (!reviewer.trim()) { say('Enter your name in "Reviewing as" before reviewing.', 'err'); return false }
@@ -131,7 +132,7 @@ export default function App() {
     const before = {}
     detail[listKey].forEach((r) => { if (keySet.has(r.key)) before[r.key] = r.status })
     const revert = (only) => setDetail((d) => d && ({ ...d, [listKey]: d[listKey].map((x) => ((only ? only.has(x.key) : keySet.has(x.key)) ? { ...x, status: before[x.key] } : x)) }))
-    patchLocal(listKey, keySet, status)
+    patchLocal(listKey, keySet, status, note)
     try {
       if (keys.length === 1) {
         await api.review({ module: slug, entity_type: type, key: keys[0], status, reviewer: reviewer.trim(), note })
@@ -262,7 +263,7 @@ export default function App() {
         </label>
         
         <button className="ghost" onClick={() => setLogOpen(true)} disabled={!slug}>History</button>
-        <button className="ghost" onClick={() => { window.location.hash = '#/data' }}>Database and downloads</button>
+        <button className="ghost" onClick={() => setFilesOpen(true)} disabled={!slug}>Data files</button>
       </div>
       {mod && (
         <div className="modprog"><span>{modTotals.done} of {modTotals.total} items reviewed in this module</span><Split c={modTotals} total={modTotals.total} slim /></div>
@@ -363,6 +364,7 @@ export default function App() {
 
       {toast && <div className={'toast ' + toast.kind} role="status">{toast.msg}</div>}
       {logOpen && <LogPanel slug={slug} onClose={() => setLogOpen(false)} />}
+      {filesOpen && <FilesPanel slug={slug} onClose={() => setFilesOpen(false)} />}
     </div>
   )
 }
@@ -406,6 +408,9 @@ function Item({ row, index, tab, focused, editing, onEdit, onCancelEdit, onSaveE
           <button className={'d no' + (row.status === 'not_approved' ? ' on' : '')} disabled={busy || editing} aria-pressed={row.status === 'not_approved'} onClick={(e) => { e.stopPropagation(); go('not_approved') }}>Not approve</button>
           {row.status !== 'pending' && <button className="undo" disabled={busy || editing} onClick={(e) => { e.stopPropagation(); go('pending') }}>Back to pending</button>}
         </div>
+        {row.status === 'not_approved' && row.note && !noteOpen && (
+          <p className="note">Reason: {row.note}</p>
+        )}
         {noteOpen && row.status === 'not_approved' && !editing && (
           <div className="noterow">
             <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Why not approved? (optional)"
@@ -552,6 +557,63 @@ function LogPanel({ slug, onClose }) {
             </li>
           ))}
         </ul>
+      </aside>
+    </div>
+  )
+}
+
+function FilesPanel({ slug, onClose }) {
+  const [list, setList] = useState(null)
+  const [view, setView] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => { api.getFiles(slug).then(setList).catch((e) => setErr(e.message)) }, [slug])
+  const open = (kind, path) => {
+    setView({ kind, path, loading: true })
+    api.getFileView(slug, kind, path).then((r) => setView(r)).catch((e) => { setView(null); setErr(e.message) })
+  }
+  const section = (kind, title) => (
+    <>
+      <h3>{title}</h3>
+      <ul className="log">
+        {((list && list[kind]) || []).map((f) => (
+          <li key={kind + f.path}>
+            <a href="#" onClick={(e) => { e.preventDefault(); open(kind, f.path) }}>{f.path}</a>
+            <p className="note">{(f.size / 1024).toFixed(1)} KB · {new Date(f.modified).toLocaleString()} · <a href={api.fileDownloadUrl(slug, kind, f.path)}>download</a></p>
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+  return (
+    <div className="scrim" onClick={onClose}>
+      <aside className="drawer wide" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Data files">
+        <div className="sh"><h2>Data files</h2><button className="ghost" onClick={onClose}>Close</button></div>
+        {err && <p className="notice">{err}</p>}
+        {!list && !err && <p className="note">Loading…</p>}
+        {list && (
+          <p className="note">
+            Download all: <a href={api.moduleDownloadUrl(slug, 'json')}>JSON</a> · <a href={api.moduleDownloadUrl(slug, 'csv')}>CSV</a> · <a href={api.moduleDownloadUrl(slug, 'all')}>Both (zip)</a>
+          </p>
+        )}
+        {view ? (
+          <>
+            <button className="ghost" onClick={() => setView(null)}>← Back to files</button>
+            <p className="code">{view.path}</p>
+            {view.loading && <p className="note">Loading…</p>}
+            {view.kind === 'json' && view.text != null && <pre className="filebox">{view.text}</pre>}
+            {view.kind === 'csv' && view.rows && (
+              <div className="filebox">
+                <table>
+                  <thead><tr>{view.fields.map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                  <tbody>{view.rows.map((r, i) => <tr key={i}>{view.fields.map((h) => <td key={h}>{r[h]}</td>)}</tr>)}</tbody>
+                </table>
+                {view.total > view.rows.length && <p className="note">Showing first {view.rows.length} of {view.total} rows.</p>}
+              </div>
+            )}
+          </>
+        ) : (
+          list && <>{section('json', 'JSON (data)')}{section('csv', 'CSV (database seed)')}</>
+        )}
       </aside>
     </div>
   )

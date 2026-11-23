@@ -24,10 +24,10 @@ export const getLog = (slug) => req(`/api/review/log/?module=${encodeURIComponen
 // Expected backend behaviour: save the new values, log the change, set status back to "pending". May return { item: {...updated row} }.
 export const editItem = (b) => post('/api/review/edit/', b)
 
-// Database page: view + download the stored JSON / CSV files exactly as they are on disk
+// Data files (JSON + seed CSV) the backend writes decisions into
 export const getFiles = (slug) => req(`/api/modules/${slug}/files/`)
-export const viewFile = (slug, kind, path) =>
+export const getFileView = (slug, kind, path) =>
   req(`/api/modules/${slug}/files/view/?kind=${kind}&path=${encodeURIComponent(path)}`)
-export const fileUrl = (slug, kind, path) =>
+export const fileDownloadUrl = (slug, kind, path) =>
   `/api/modules/${slug}/files/download/?kind=${kind}&path=${encodeURIComponent(path)}`
-export const zipUrl = (slug, format) => `/api/modules/${slug}/download/?format=${format}`
+export const moduleDownloadUrl = (slug, format = 'all') => `/api/modules/${slug}/download/?format=${format}`
